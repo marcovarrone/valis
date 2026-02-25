@@ -10,6 +10,7 @@ from contextlib import suppress
 from . import feature_matcher
 from . import feature_detectors
 from . import preprocessing
+from . import slide_tools
 from . import warp_tools
 from . import valtils
 from . import viz
@@ -206,15 +207,54 @@ class MicroRigidRegistrar(object):
 
             self.align_slides(moving_slide, fixed_slide, processor_dict=processor_dict, mask=mask)
 
+    def _get_best_level_and_scale(self, slide_obj):
+        """Find the best pyramid level to read from, based on target dimensions.
+
+        Instead of always reading level=0 and downscaling by self.scale,
+        find the pyramid level closest to the target size and compute
+        only a small residual rescale factor.
+
+        Returns
+        -------
+        best_level : int
+            Pyramid level to read from.
+        residual_scale : float
+            Additional rescale factor to apply after reading from best_level.
+        """
+        # Target dimension = full-res aligned shape * self.scale
+        target_max_dim = np.max(slide_obj.aligned_slide_shape_rc) * self.scale
+        best_level = slide_tools.get_level_idx(slide_obj.slide_dimensions_wh, target_max_dim)
+
+        return best_level
+
     def align_slides(self, moving_slide, fixed_slide, processor_dict, mask=None):
-        moving_img = moving_slide.warp_slide(level=0, non_rigid=False, crop=False)
-        moving_img = warp_tools.rescale_img(moving_img, self.scale)
+        # Find the best pyramid level for the target resolution
+        moving_level = self._get_best_level_and_scale(moving_slide)
+        moving_img = moving_slide.warp_slide(level=moving_level, non_rigid=False, crop=False)
+
+        # Compute what the shape would have been at level=0 + self.scale
+        target_moving_shape_rc = np.round(
+            np.array(moving_slide.aligned_slide_shape_rc) * self.scale
+        ).astype(int)
+        # Rescale from the pyramid level to the exact target size
+        moving_shape_rc = warp_tools.get_shape(moving_img)[0:2]
+        residual_scale = np.min(target_moving_shape_rc / moving_shape_rc)
+        if not np.isclose(residual_scale, 1.0, atol=0.02):
+            moving_img = warp_tools.rescale_img(moving_img, residual_scale)
 
         moving_shape_rc = warp_tools.get_shape(moving_img)[0:2]
         moving_sxy = (moving_shape_rc/moving_slide.reg_img_shape_rc)[::-1]
 
-        fixed_img = fixed_slide.warp_slide(0, non_rigid=False, crop=False)
-        fixed_img = warp_tools.rescale_img(fixed_img, self.scale)
+        fixed_level = self._get_best_level_and_scale(fixed_slide)
+        fixed_img = fixed_slide.warp_slide(level=fixed_level, non_rigid=False, crop=False)
+
+        target_fixed_shape_rc = np.round(
+            np.array(fixed_slide.aligned_slide_shape_rc) * self.scale
+        ).astype(int)
+        fixed_shape_rc = warp_tools.get_shape(fixed_img)[0:2]
+        residual_scale = np.min(target_fixed_shape_rc / fixed_shape_rc)
+        if not np.isclose(residual_scale, 1.0, atol=0.02):
+            fixed_img = warp_tools.rescale_img(fixed_img, residual_scale)
 
         fixed_shape_rc = warp_tools.get_shape(fixed_img)[0:2]
         fixed_sxy = (fixed_shape_rc/fixed_slide.reg_img_shape_rc)[::-1]
