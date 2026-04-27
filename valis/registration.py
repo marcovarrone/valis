@@ -3126,10 +3126,11 @@ class Valis(object):
             else:
                 kp1_xy = match_info.matched_kp1_xy
 
-            s = np.array(slide_obj.processed_img_shape_rc)/np.array(slide_obj.uncropped_processed_img_shape_rc)
+            s = (np.array(slide_obj.processed_img_shape_rc) / np.array(slide_obj.uncropped_processed_img_shape_rc))[::-1]
+
             kp1_xy_in_uncropped_scaled = s*(kp1_xy + slide_obj.processed_crop_bbox[0:2])
 
-            prev_s = np.array(prev_slide_obj.processed_img_shape_rc)/np.array(prev_slide_obj.uncropped_processed_img_shape_rc)
+            prev_s = (np.array(prev_slide_obj.processed_img_shape_rc) / np.array(prev_slide_obj.uncropped_processed_img_shape_rc))[::-1]
             kp2_xy_in_uncropped_scaled = prev_s*(match_info.matched_kp2_xy + prev_slide_obj.processed_crop_bbox[0:2])
             kp2_xy_in_uncropped_warped = warp_tools.warp_xy(kp2_xy_in_uncropped_scaled, M=prev_M)
 
