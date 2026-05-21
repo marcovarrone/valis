@@ -804,7 +804,22 @@ class SerialRigidRegistrar(object):
         if feature_detector.rgb and valis_obj is not None:
             slide_obj = valis_obj.get_slide(img_obj.name)
             if slide_obj.is_rgb:
-                detect_img, mask, original_shape_rc, uncropped_shape_rc, crop_bbox = valis_obj.get_roi_for_processing(slide_obj, processing_cls=None, mask=slide_obj.rigid_reg_mask)
+                if slide_obj.rigid_cropped:
+                    detect_img = valis_obj.get_cropped_img_for_rigid_warp(slide_obj)
+                else:
+                    detect_img = slide_obj.image
+
+                detect_shape_rc = warp_tools.get_shape(detect_img)[0:2]
+                reg_shape_rc = warp_tools.get_shape(img_obj.image)[0:2]
+                if not np.all(detect_shape_rc == reg_shape_rc):
+                    msg = (
+                        f"[valis geometry] RGB feature image for {slide_obj.name} "
+                        f"has shape {detect_shape_rc}, but rigid registration image "
+                        f"has shape {reg_shape_rc}. Resizing RGB detection image so "
+                        "feature coordinates remain in rigid registration space."
+                    )
+                    valtils.print_warning(msg, warning_type=None, rgb=Fore.CYAN)
+                    detect_img = warp_tools.resize_img(detect_img, reg_shape_rc)
             else:
                 detect_img = img_obj.image
         else:
