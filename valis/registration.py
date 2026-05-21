@@ -2927,9 +2927,16 @@ class Valis(object):
             # Must match the saved processed PNG / rigid feature image, not the mask
             # thumbnail frame (uncropped_unscaled_processed_shape_rc).
             slide_obj.processed_img_shape_rc = processed_shape_rc
-            slide_obj.rigid_reg_mask = mask
             slide_obj.uncropped_processed_img_shape_rc = uncropped_shape_rc
             slide_obj.processed_crop_bbox = crop_bbox
+            if slide_obj.rigid_cropped:
+                slide_obj.rigid_reg_mask = self.crop_rigid_reg_mask(slide_obj, mask)
+            elif np.any(mask.shape[0:2] != processed_shape_rc):
+                slide_obj.rigid_reg_mask = warp_tools.resize_img(
+                    mask, processed_shape_rc, interp_method="nearest"
+                )
+            else:
+                slide_obj.rigid_reg_mask = mask
 
             if slide_obj.rigid_cropped and not np.all(
                 processed_shape_rc == uncropped_unscaled_processed_shape_rc
@@ -3110,9 +3117,12 @@ class Valis(object):
         ref_slide = self.get_ref_slide()
         combo_mask = np.zeros(self.aligned_img_shape_rc, dtype=int)
         for slide_obj in self.slide_dict.values():
-            warped_img_mask = warp_tools.warp_img(slide_obj.rigid_reg_mask,
+            mask_for_warp = self.crop_rigid_reg_mask(slide_obj, slide_obj.rigid_reg_mask)
+            warped_img_mask = warp_tools.warp_img(mask_for_warp,
                                                   M=slide_obj.M,
                                                   out_shape_rc=slide_obj.reg_img_shape_rc,
+                                                  transformation_src_shape_rc=slide_obj.processed_img_shape_rc,
+                                                  transformation_dst_shape_rc=slide_obj.reg_img_shape_rc,
                                                   interp_method="nearest")
 
             combo_mask[warped_img_mask > 0] += 1
@@ -3808,7 +3818,14 @@ class Valis(object):
 
         for i, slide_obj in enumerate(slide_list):
             # Determine where images overlap
-            rigid_mask = slide_obj.warp_img(slide_obj.rigid_reg_mask, non_rigid=False, crop=False, interp_method="nearest")
+            mask_for_warp = self.crop_rigid_reg_mask(slide_obj, slide_obj.rigid_reg_mask)
+            rigid_mask = slide_obj.warp_img(
+                mask_for_warp, non_rigid=False, crop=False, interp_method="nearest"
+            )
+            if not np.all(rigid_mask.shape[0:2] == combo_mask.shape[0:2]):
+                rigid_mask = warp_tools.resize_img(
+                    rigid_mask, combo_mask.shape[0:2], interp_method="nearest"
+                )
             combo_mask[rigid_mask > 0] += 1
 
             # Caclulate running average
@@ -3856,7 +3873,14 @@ class Valis(object):
 
         combo_mask = np.zeros(self.aligned_img_shape_rc, dtype=int)
         for i, slide_obj in enumerate(slide_list):
-            rigid_mask = slide_obj.warp_img(slide_obj.rigid_reg_mask, non_rigid=False, crop=False, interp_method="nearest")
+            mask_for_warp = self.crop_rigid_reg_mask(slide_obj, slide_obj.rigid_reg_mask)
+            rigid_mask = slide_obj.warp_img(
+                mask_for_warp, non_rigid=False, crop=False, interp_method="nearest"
+            )
+            if not np.all(rigid_mask.shape[0:2] == combo_mask.shape[0:2]):
+                rigid_mask = warp_tools.resize_img(
+                    rigid_mask, combo_mask.shape[0:2], interp_method="nearest"
+                )
             combo_mask[rigid_mask > 0] += 1
 
         temp_mask = 255*filters.apply_hysteresis_threshold(combo_mask, 0.5, self.size-0.5).astype(np.uint8)
