@@ -2921,24 +2921,30 @@ class Valis(object):
 
             # Set attributes related to processed image's shape
             processed_f_out = os.path.join(self.processed_dir, slide_obj.name + ".png")
+            processed_shape_rc = np.array(warp_tools.get_shape(processed_img)[0:2])
             slide_obj.processed_img_f = processed_f_out
             slide_obj.processed_img = processed_img
-            slide_obj.processed_img_shape_rc = uncropped_unscaled_processed_shape_rc
+            # Must match the saved processed PNG / rigid feature image, not the mask
+            # thumbnail frame (uncropped_unscaled_processed_shape_rc).
+            slide_obj.processed_img_shape_rc = processed_shape_rc
             slide_obj.rigid_reg_mask = mask
             slide_obj.uncropped_processed_img_shape_rc = uncropped_shape_rc
             slide_obj.processed_crop_bbox = crop_bbox
 
-            saved_shape_rc = np.array(warp_tools.get_shape(processed_img)[0:2])
-            assigned_shape_rc = np.array(uncropped_unscaled_processed_shape_rc)
-            if slide_obj.rigid_cropped and not np.all(saved_shape_rc == assigned_shape_rc):
-                scale = saved_shape_rc / assigned_shape_rc.astype(float)
+            if slide_obj.rigid_cropped and not np.all(
+                processed_shape_rc == uncropped_unscaled_processed_shape_rc
+            ):
+                scale = processed_shape_rc / np.array(
+                    uncropped_unscaled_processed_shape_rc, dtype=float
+                )
                 valtils.print_warning(
                     f"[valis geometry] Valis.process_imgs slide={slide_obj.name}: "
-                    f"saved processed PNG shape {saved_shape_rc.tolist()} differs from "
-                    f"assigned processed_img_shape_rc {assigned_shape_rc.tolist()} "
-                    f"(scale saved/assigned = {scale.round(6).tolist()}). "
-                    "Rigid transforms use processed_img_shape_rc; features use the PNG. "
-                    "A large mismatch here can cause center-good / corner-bad alignment.",
+                    f"using actual processed image shape {processed_shape_rc.tolist()} for "
+                    f"registration/warp (mask/thumbnail frame was "
+                    f"{list(uncropped_unscaled_processed_shape_rc)}, "
+                    f"scale processed/mask_frame = {scale.round(6).tolist()}). "
+                    "Previously assigned mask-frame size to processed_img_shape_rc, "
+                    "which mismatched the saved PNG and caused corner scale error.",
                     warning_type=None,
                     rgb=Fore.YELLOW,
                 )
@@ -3265,6 +3271,36 @@ class Valis(object):
         return slide_M_dict, registerd_out_shape_rc, cropped_M_dict, cropped_registerd_out_shape_rc, matches_dict
 
 
+    def _sync_processed_img_shapes_from_rigid_registrar(self, rigid_registrar):
+        """Align slide.processed_img_shape_rc with PNGs used for rigid registration."""
+        for img_obj in rigid_registrar.img_obj_list:
+            slide_obj = self.get_slide(img_obj.name)
+            png_shape_rc = np.array(img_obj.image.shape[0:2])
+
+            if slide_obj.processed_img is not None:
+                mem_shape_rc = np.array(warp_tools.get_shape(slide_obj.processed_img)[0:2])
+                if not np.all(mem_shape_rc == png_shape_rc):
+                    valtils.print_warning(
+                        f"[valis geometry] slide={slide_obj.name}: in-memory processed_img "
+                        f"shape {mem_shape_rc.tolist()} != rigid PNG shape "
+                        f"{png_shape_rc.tolist()} (denoise or re-save may be needed)",
+                        warning_type=None,
+                        rgb=Fore.YELLOW,
+                    )
+
+            if not np.all(png_shape_rc == slide_obj.processed_img_shape_rc):
+                old_shape_rc = slide_obj.processed_img_shape_rc
+                slide_obj.processed_img_shape_rc = png_shape_rc
+                scale = png_shape_rc / np.array(old_shape_rc, dtype=float)
+                valtils.print_warning(
+                    f"[valis geometry] slide={slide_obj.name}: corrected "
+                    f"processed_img_shape_rc {list(old_shape_rc)} -> "
+                    f"{png_shape_rc.tolist()} to match rigid-registration PNG "
+                    f"(scale correction = {scale.round(6).tolist()})",
+                    warning_type=None,
+                    rgb=Fore.YELLOW,
+                )
+
     def get_cropped_img_for_rigid_warp(self, slide_obj):
         level = slide_tools.get_level_idx(slide_obj.slide_dimensions_wh, np.max(slide_obj.uncropped_processed_img_shape_rc))
         if level > 0:
@@ -3312,6 +3348,7 @@ class Valis(object):
 
         # print("\n======== Detecting features\n")
         rigid_registrar.generate_img_obj_list(feature_detector, valis_obj=self)
+        self._sync_processed_img_shapes_from_rigid_registrar(rigid_registrar)
 
         if self.create_masks:
             # Remove feature points outside of mask

@@ -2215,6 +2215,9 @@ def register_images(
     )
 
     if valis_obj is not None:
+        valis_obj._sync_processed_img_shapes_from_rigid_registrar(registrar)
+
+    if valis_obj is not None:
         if valis_obj.create_masks:
             # Remove feature points outside of mask
             for img_obj in registrar.img_obj_dict.values():
