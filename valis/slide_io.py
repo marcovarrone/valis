@@ -479,6 +479,85 @@ def check_to_use_openslide(src_f):
     return use_openslide
 
 
+def log_pyramid_geometry(reader, context="", slide_dimensions=None, compare_autocrop=True):
+    """Log pyramid level sizes to diagnose metadata vs read scale mismatches.
+
+    Compares stored ``slide_dimensions``, OpenSlide ``level_dimensions`` (when
+    available), and pyvips read sizes. Optionally reports legacy ``autocrop``
+    read sizes when they differ from uncropped reads.
+    """
+    slide_dimensions = (
+        np.array(slide_dimensions)
+        if slide_dimensions is not None
+        else np.array(reader.metadata.slide_dimensions)
+    )
+    name = valtils.get_name(reader.src_f)
+    reader_cls = reader.__class__.__name__
+    use_openslide = getattr(reader, "use_openslide", False)
+    lines = [
+        f"[valis geometry] {context} slide={name} reader={reader_cls} "
+        f"use_openslide={use_openslide} n_levels={len(slide_dimensions)}",
+        f"  metadata slide_dimensions (WH): {slide_dimensions.tolist()}",
+    ]
+
+    if use_openslide:
+        try:
+            import openslide
+            wsi = openslide.OpenSlide(reader.src_f)
+            os_dims = np.array(wsi.level_dimensions)
+            lines.append(f"  openslide.level_dimensions (WH): {os_dims.tolist()}")
+            if not np.array_equal(slide_dimensions, os_dims):
+                lines.append(
+                    "  WARNING: metadata slide_dimensions != openslide.level_dimensions"
+                )
+        except Exception as e:
+            lines.append(f"  openslide.level_dimensions: unavailable ({e})")
+
+    n_levels = len(slide_dimensions)
+    for level in range(n_levels):
+        meta_wh = slide_dimensions[level]
+        read_wh = None
+        autocrop_wh = None
+        try:
+            if use_openslide:
+                vips_img = pyvips.Image.new_from_file(
+                    reader.src_f, level=level, rgb=False, access="random"
+                )
+            else:
+                vips_img = reader.slide2vips(level=level)
+            read_wh = (vips_img.width, vips_img.height)
+        except Exception as e:
+            lines.append(f"  level {level}: pyvips read failed ({e})")
+            continue
+
+        line = f"  level {level}: metadata_WH={tuple(meta_wh)} pyvips_read_WH={read_wh}"
+        if not np.allclose(meta_wh, read_wh, rtol=0, atol=2):
+            line += " MISMATCH(metadata vs pyvips read)"
+
+        if compare_autocrop and use_openslide:
+            try:
+                vips_ac = pyvips.Image.new_from_file(
+                    reader.src_f, level=level, autocrop=True, rgb=True, access="random"
+                )
+                autocrop_wh = (vips_ac.width, vips_ac.height)
+                if autocrop_wh != read_wh:
+                    line += f" autocrop_read_WH={autocrop_wh}"
+            except Exception:
+                pass
+
+        if level > 0 and read_wh is not None:
+            meta_ratio = meta_wh / slide_dimensions[0].astype(float)
+            read_ratio = np.array(read_wh) / np.array(slide_dimensions[0], dtype=float)
+            if not np.allclose(meta_ratio, read_ratio, rtol=0.02, atol=0.02):
+                line += (
+                    f" downsample_ratio_mismatch meta={meta_ratio.round(4).tolist()}"
+                    f" read={read_ratio.round(4).tolist()}"
+                )
+        lines.append(line)
+
+    valtils.print_warning("\n".join(lines), warning_type=None, rgb=Fore.CYAN)
+
+
 def get_ome_obj(x):
     """Get ome_types.model.ome.OME object
 
@@ -1675,7 +1754,12 @@ class VipsSlideReader(SlideReader):
             slide_meta.n_channels = vips_img.bands - vips_img.hasalpha()
             vips_img = vips_img[0:3]
 
-        slide_meta.slide_dimensions = self._get_slide_dimensions(vips_img)
+        if self.use_openslide:
+            import openslide
+            wsi = openslide.OpenSlide(self.src_f)
+            slide_meta.slide_dimensions = self._get_slide_dimensions_openslide(wsi)
+        else:
+            slide_meta.slide_dimensions = self._get_slide_dimensions(vips_img)
         img_xml = self._get_xml(vips_img)
         if img_xml is not None:
             try:
@@ -1698,6 +1782,13 @@ class VipsSlideReader(SlideReader):
             n_pages = toilet_roll.height/page.height
             if n_pages > 1:
                 slide_meta.n_channels = int(n_pages)
+
+        if self.use_openslide:
+            log_pyramid_geometry(
+                self,
+                context="VipsSlideReader.create_metadata",
+                slide_dimensions=slide_meta.slide_dimensions,
+            )
 
         return slide_meta
 
@@ -1801,7 +1892,23 @@ class VipsSlideReader(SlideReader):
 
         if self.use_openslide:
             # Keep rgb=False returns rgba. Makes it possible to avoid having black pixels for background. Can remove alpha channel after
-            vips_slide = pyvips.Image.new_from_file(self.src_f, level=level, autocrop=True, rgb=False, access='random')[0:3]
+            vips_slide = pyvips.Image.new_from_file(self.src_f, level=level, rgb=False, access='random')[0:3]
+            if (
+                level < len(self.metadata.slide_dimensions)
+                and not np.allclose(
+                    self.metadata.slide_dimensions[level],
+                    (vips_slide.width, vips_slide.height),
+                    rtol=0,
+                    atol=2,
+                )
+            ):
+                valtils.print_warning(
+                    f"[valis geometry] slide2vips level {level} for {valtils.get_name(self.src_f)}: "
+                    f"metadata_WH={tuple(self.metadata.slide_dimensions[level])} "
+                    f"read_WH=({vips_slide.width}, {vips_slide.height})",
+                    warning_type=None,
+                    rgb=Fore.YELLOW,
+                )
 
         elif self.is_ome:
             vips_slide = self._slide2vips_ome_one_series(level=level, *args, **kwargs)
@@ -1953,7 +2060,9 @@ class VipsSlideReader(SlideReader):
         """
 
         if self.use_openslide:
-            slide_dimensions = self._get_slide_dimensions_openslide(vips_img)
+            import openslide
+            wsi = openslide.OpenSlide(self.src_f)
+            slide_dimensions = self._get_slide_dimensions_openslide(wsi)
 
         elif self.is_ome:
             slide_dimensions = self._get_slide_dimensions_ometiff(vips_img)
@@ -1989,13 +2098,16 @@ class VipsSlideReader(SlideReader):
 
         return slide_dims_wh
 
-    def _get_slide_dimensions_openslide(self, vips_img):
-        """Get dimensions of slide at all pyramid levels using openslide and autocrop option
+    def _get_slide_dimensions_openslide(self, wsi):
+        """Get dimensions of slide at all pyramid levels using OpenSlide.
+
+        Uses native ``level_dimensions`` so metadata matches uncropped pyramid
+        reads (no libvips ``autocrop``).
 
         Parameters
         ----------
-        vips_img : pyvips.Image
-            pyvips.Image of slide
+        wsi : openslide.OpenSlide
+            OpenSlide handle for the slide.
 
         Returns
         -------
@@ -2004,10 +2116,7 @@ class VipsSlideReader(SlideReader):
 
         """
 
-        n_levels = eval(vips_img.get('openslide.level-count'))
-        slide_dims = np.array([warp_tools.get_shape(pyvips.Image.new_from_file(self.src_f, level=i, autocrop=True, rgb=True))[0:2][::-1] for i in range(n_levels)])
-
-        return slide_dims
+        return np.array(wsi.level_dimensions)
 
     def _get_slide_dimensions_vips(self, vips_img):
         """Get dimensions of slide at all pyramid levels using vips

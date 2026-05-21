@@ -13,6 +13,7 @@ from matplotlib import colormaps
 import re
 from PIL import Image
 from collections import Counter
+from colorama import Fore
 from . import valtils
 
 from . import warp_tools
@@ -347,6 +348,23 @@ def warp_slide(src_f, transformation_src_shape_rc, transformation_dst_shape_rc,
         series = reader.series
 
     vips_slide = reader.slide2vips(level=level, series=series)
+    if (
+        level < len(reader.metadata.slide_dimensions)
+        and not np.allclose(
+            reader.metadata.slide_dimensions[level],
+            (vips_slide.width, vips_slide.height),
+            rtol=0,
+            atol=2,
+        )
+    ):
+        valtils.print_warning(
+            f"[valis geometry] warp_slide level {level} for {valtils.get_name(src_f)}: "
+            f"metadata_WH={tuple(reader.metadata.slide_dimensions[level])} "
+            f"read_WH=({vips_slide.width}, {vips_slide.height}) "
+            f"reader={reader.__class__.__name__}",
+            warning_type=None,
+            rgb=Fore.YELLOW,
+        )
     if M is None and dxdy is None:
         return vips_slide
 

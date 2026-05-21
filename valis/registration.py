@@ -47,6 +47,47 @@ from . import serial_non_rigid
 
 pyvips.cache_set_max(0)
 
+
+def log_registration_geometry(slide, level=0, context=""):
+    """Log shapes and scale factors linking registration to pyramid warping."""
+    lines = [
+        f"[valis geometry] {context} slide={slide.name} pyramid_level={level}",
+        f"  reader={slide.reader.__class__.__name__} src={slide.src_f}",
+        f"  slide_dimensions_wh (all levels): {np.array(slide.slide_dimensions_wh).tolist()}",
+    ]
+    if level < len(slide.slide_dimensions_wh):
+        lines.append(f"  slide_dimensions_wh[L{level}]: {slide.slide_dimensions_wh[level]}")
+    if slide.processed_img_shape_rc is not None:
+        lines.append(f"  processed_img_shape_rc: {slide.processed_img_shape_rc}")
+        if slide.uncropped_processed_img_shape_rc is not None:
+            lines.append(
+                f"  uncropped_processed_img_shape_rc: {slide.uncropped_processed_img_shape_rc}"
+            )
+        l0_wh = slide.slide_dimensions_wh[0]
+        scale_l0_to_proc = np.array(slide.processed_img_shape_rc[::-1]) / np.array(l0_wh, dtype=float)
+        lines.append(f"  scale L0_metadata -> processed (WH/RC): {scale_l0_to_proc.round(6).tolist()}")
+    if slide.reg_img_shape_rc is not None:
+        lines.append(f"  reg_img_shape_rc: {slide.reg_img_shape_rc}")
+    if slide.aligned_slide_shape_rc is not None:
+        lines.append(f"  aligned_slide_shape_rc (L0): {slide.aligned_slide_shape_rc}")
+    if (
+        slide.processed_img_shape_rc is not None
+        and level < len(slide.slide_dimensions_wh)
+    ):
+        level_wh = slide.slide_dimensions_wh[level]
+        warp_scale = np.array(level_wh[::-1]) / np.array(slide.processed_img_shape_rc, dtype=float)
+        lines.append(
+            f"  warp scale metadata_L{level} / processed (for warp_slide): "
+            f"{warp_scale.round(6).tolist()}"
+        )
+    if slide.M is not None:
+        lines.append(f"  rigid M translation (px, processed space): {slide.M[:2, 2].round(3).tolist()}")
+        lines.append(
+            f"  rigid M linear (processed space): {slide.M[:2, :2].reshape(-1).round(6).tolist()}"
+        )
+    valtils.print_warning("\n".join(lines), warning_type=None, rgb=Fore.CYAN)
+
+
 # Destination directories #
 CONVERTED_IMG_DIR = "images"
 PROCESSED_IMG_DIR = "processed"
@@ -988,6 +1029,12 @@ class Slide(object):
 
         if reader is None:
             reader = self.reader
+
+        log_registration_geometry(
+            self,
+            level=level,
+            context="Slide.warp_slide",
+        )
 
         warped_slide = slide_tools.warp_slide(src_f, M=self.M,
                                               transformation_src_shape_rc=self.processed_img_shape_rc,
@@ -2871,6 +2918,12 @@ class Valis(object):
             slide_obj.rigid_reg_mask = mask
             slide_obj.uncropped_processed_img_shape_rc = uncropped_shape_rc
             slide_obj.processed_crop_bbox = crop_bbox
+
+            log_registration_geometry(
+                slide_obj,
+                level=processing_level,
+                context="Valis.process_imgs",
+            )
 
             warp_tools.save_img(processed_f_out, processed_img)
 
