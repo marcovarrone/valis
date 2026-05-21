@@ -59,6 +59,15 @@ def log_registration_geometry(slide, level=0, context=""):
         lines.append(f"  slide_dimensions_wh[L{level}]: {slide.slide_dimensions_wh[level]}")
     if slide.processed_img_shape_rc is not None:
         lines.append(f"  processed_img_shape_rc: {slide.processed_img_shape_rc}")
+        if slide.processed_img is not None:
+            saved_shape_rc = warp_tools.get_shape(slide.processed_img)[0:2]
+            lines.append(f"  saved_processed_img_shape_rc (in-memory): {list(saved_shape_rc)}")
+            if not np.all(saved_shape_rc == slide.processed_img_shape_rc):
+                scale = np.array(saved_shape_rc) / np.array(slide.processed_img_shape_rc, dtype=float)
+                lines.append(
+                    "  WARNING: saved processed image shape != processed_img_shape_rc "
+                    f"(scale saved/transform = {scale.round(6).tolist()})"
+                )
         if slide.uncropped_processed_img_shape_rc is not None:
             lines.append(
                 f"  uncropped_processed_img_shape_rc: {slide.uncropped_processed_img_shape_rc}"
@@ -2919,6 +2928,21 @@ class Valis(object):
             slide_obj.uncropped_processed_img_shape_rc = uncropped_shape_rc
             slide_obj.processed_crop_bbox = crop_bbox
 
+            saved_shape_rc = np.array(warp_tools.get_shape(processed_img)[0:2])
+            assigned_shape_rc = np.array(uncropped_unscaled_processed_shape_rc)
+            if slide_obj.rigid_cropped and not np.all(saved_shape_rc == assigned_shape_rc):
+                scale = saved_shape_rc / assigned_shape_rc.astype(float)
+                valtils.print_warning(
+                    f"[valis geometry] Valis.process_imgs slide={slide_obj.name}: "
+                    f"saved processed PNG shape {saved_shape_rc.tolist()} differs from "
+                    f"assigned processed_img_shape_rc {assigned_shape_rc.tolist()} "
+                    f"(scale saved/assigned = {scale.round(6).tolist()}). "
+                    "Rigid transforms use processed_img_shape_rc; features use the PNG. "
+                    "A large mismatch here can cause center-good / corner-bad alignment.",
+                    warning_type=None,
+                    rgb=Fore.YELLOW,
+                )
+
             log_registration_geometry(
                 slide_obj,
                 level=processing_level,
@@ -3324,7 +3348,25 @@ class Valis(object):
                    f"Will now use {matcher.__class__.__name__} to match images using {matcher.feature_detector.__class__.__name__} features")
             # Images sorted with different feature_detector, but need to matched using matcher's feature_detector
             valtils.print_warning(msg, None)
+            for slide_obj in self.slide_dict.values():
+                png_shape = None
+                if slide_obj.processed_img is not None:
+                    png_shape = warp_tools.get_shape(slide_obj.processed_img)[0:2]
+                valtils.print_warning(
+                    f"[valis geometry] pre-rematch slide={slide_obj.name}: "
+                    f"processed_png_shape_rc={list(png_shape) if png_shape is not None else None}, "
+                    f"processed_img_shape_rc={list(slide_obj.processed_img_shape_rc)}, "
+                    f"rigid_cropped={slide_obj.rigid_cropped}, is_rgb={slide_obj.is_rgb}",
+                    warning_type=None,
+                    rgb=Fore.CYAN,
+                )
             rigid_registrar.rematch(matcher_obj=matcher, keep_unfiltered=False, valis_obj=self)
+        else:
+            valtils.print_warning(
+                "[valis geometry] rematch skipped (same matcher and feature detector for sorting and rigid registration)",
+                warning_type=None,
+                rgb=Fore.CYAN,
+            )
 
         if rigid_registrar.size > 2:
             rigid_registrar.update_match_dicts_with_neighbor_filter(transformer, matcher)
